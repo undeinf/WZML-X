@@ -76,7 +76,47 @@ class Rapidgator:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'https://rapidgator.net/'
         }
+
+        # 1. Fetch file info (filename and size) using Rapidgator API first
+        # This prevents running a HEAD request on the direct link which could expire/lock it.
+        filename = None
+        total_size = 0
+        try:
+            info_url = f"https://rapidgator.net/api/file/info?sid={session_id}&url={clean_url}"
+            info_response = await self.session.get(info_url, headers=headers)
+            if info_response.status_code == 200:
+                info_result = info_response.json()
+                if info_result.get('response_status') == 200:
+                    info_data = info_result.get('response', {})
+                    filename = info_data.get('filename')
+                    total_size = int(info_data.get('size', 0))
+        except Exception as e:
+            LOGGER.warning(f"Failed to fetch file info from API: {e}")
+
+        # Fallbacks for filename if info API failed or didn't return it
+        if not filename:
+            try:
+                clean_input_url = url.split('?')[0].split('#')[0]
+                path_segments = [seg for seg in urlparse(clean_input_url).path.split('/') if seg]
+                if len(path_segments) >= 3 and path_segments[0] == 'file':
+                    name_seg = path_segments[2]
+                    if name_seg.lower().endswith('.html'):
+                        name_seg = name_seg[:-5]
+                    filename = name_seg
+                elif path_segments and '.' in path_segments[-1] and path_segments[-1] != 'file':
+                    name_seg = path_segments[-1]
+                    if name_seg.lower().endswith('.html'):
+                        name_seg = name_seg[:-5]
+                    filename = name_seg
+            except Exception as e:
+                LOGGER.warning(f"Failed to extract filename from input URL: {e}")
+
+        if not filename:
+            filename = f'rapidgator_{file_id}'
+            
+        filename = re.sub(r'[\\/*?:"<>|]', '', filename)
         
+        # 2. Get premium download URL from Rapidgator API
         api_download_url = f"https://rapidgator.net/api/file/download?sid={session_id}&url={clean_url}"
         
         api_response = await self.session.get(api_download_url, headers=headers)
@@ -104,74 +144,6 @@ class Rapidgator:
         if not download_url:
             raise Exception("No download URL in API response")
             
-        filename = response_data.get('filename')
-        
-        # Fallback for filename parsing
-        # 1. Try to extract filename from the input URL
-        if not filename:
-            try:
-                clean_input_url = url.split('?')[0].split('#')[0]
-                path_segments = [seg for seg in urlparse(clean_input_url).path.split('/') if seg]
-                if len(path_segments) >= 3 and path_segments[0] == 'file':
-                    name_seg = path_segments[2]
-                    if name_seg.lower().endswith('.html'):
-                        name_seg = name_seg[:-5]
-                    filename = name_seg
-                elif path_segments and '.' in path_segments[-1] and path_segments[-1] != 'file':
-                    name_seg = path_segments[-1]
-                    if name_seg.lower().endswith('.html'):
-                        name_seg = name_seg[:-5]
-                    filename = name_seg
-            except Exception as e:
-                LOGGER.warning(f"Failed to extract filename from input URL: {e}")
-
-        # 2. Scrape filename from HTML as fallback
-        if not filename:
-            try:
-                page_response = await self.session.get(url, headers=headers)
-                html_content = page_response.text
-                if html_content:
-                    patterns = [
-                        r'<title>Download file ([^<]+)</title>',
-                        r'Downloading:\s*</strong>\s*<a[^>]*>\s*([^<]+)</a>',
-                        r'<strong>\s*Downloading:\s*</strong>[^<]*<a[^>]*>([^<]+)</a>',
-                        r'filename["\']:\s*["\']([^"\']+)["\']',
-                    ]
-                    for pattern in patterns:
-                        match = re.search(pattern, html_content, re.IGNORECASE)
-                        if match:
-                            filename = match.group(1).strip()
-                            break
-            except Exception as e:
-                LOGGER.warning(f"Failed to fetch HTML or scrape filename: {e}")
-        
-        # 3. Fallback to parsing download_url path segments
-        if not filename:
-            try:
-                path_segments = [seg for seg in urlparse(download_url).path.split('/') if seg]
-                if path_segments and '.' in path_segments[-1]:
-                    filename = path_segments[-1]
-            except Exception:
-                pass
-                
-        # 4. Fallback to ID-based name
-        if not filename:
-            filename = f'rapidgator_{file_id}'
-            
-        filename = re.sub(r'[\\/*?:"<>|]', '', filename)
-        
-        total_size = 0
-        try:
-            head_resp = await self.session.head(download_url, headers=headers, allow_redirects=True)
-            total_size = int(head_resp.headers.get('Content-Length', 0))
-        except Exception as e:
-            LOGGER.warning(f"Failed to get file size via HEAD request: {e}")
-            try:
-                get_resp = await self.session.get(download_url, headers=headers, allow_redirects=True)
-                total_size = int(get_resp.headers.get('Content-Length', 0))
-            except Exception as e2:
-                LOGGER.warning(f"Failed to get file size via GET request: {e2}")
-                
         return download_url, filename, total_size
 
 async def get_rapidgator_account_info(username, password):
