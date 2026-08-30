@@ -77,11 +77,8 @@ advanced_options = [
 ]
 yt_options = ["YT_DESP", "YT_TAGS", "YT_CATEGORY_ID", "YT_PRIVACY_STATUS"]
 mega_options = ["MEGA_EMAIL", "MEGA_PASSWORD"]
-<<<<<<< HEAD
 rapidgator_options = ["RAPIDGATOR_EMAIL", "RAPIDGATOR_PASSWORD"]
-=======
 seedr_options = ["SEEDR_EMAIL", "SEEDR_PASSWORD", "SEEDR_DELETE_FOLDER"]
->>>>>>> upstream/wzv3
 
 user_settings_text = {
     "THUMBNAIL": (
@@ -332,7 +329,6 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "Your Mega.nz account password for per-user Mega downloads & uploads.",
         "<i>Send your Mega.nz account password.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
-<<<<<<< HEAD
     "RAPIDGATOR_EMAIL": (
         "String",
         "Your Rapidgator account email for per-user Rapidgator downloads.",
@@ -342,7 +338,7 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "String",
         "Your Rapidgator account password for per-user Rapidgator downloads.",
         "<i>Send your Rapidgator account password.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
-=======
+    ),
     "SEEDR_EMAIL": (
         "String",
         "Your Seedr.cc account email for per-user Seedr cloud downloads.",
@@ -352,7 +348,6 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "String",
         "Your Seedr.cc account password for per-user Seedr cloud downloads.",
         "<i>Send your Seedr.cc account password.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
->>>>>>> upstream/wzv3
     ),
     "DRIVE_CAT": (
         "Dict",
