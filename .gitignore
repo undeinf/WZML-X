@@ -17,6 +17,7 @@ list_drives.txt
 shortener.txt
 categories.txt
 cookies.txt
+terabox.txt
 downloads/*
 .github/instructions/*
 .github/skills/*
@@ -28,3 +29,5 @@ AGENTS.md
 __pycache__/
 config.py
 test_rapidgator.py
+DESIGN.md
+.claude

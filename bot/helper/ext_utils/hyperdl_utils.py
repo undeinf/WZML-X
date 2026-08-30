@@ -13,7 +13,6 @@ from asyncio import (
 )
 from datetime import datetime
 from mimetypes import guess_extension
-from os import cpu_count
 from pathlib import Path
 from re import sub
 from sys import argv
@@ -37,8 +36,10 @@ from pyrogram.session import Session
 
 from ... import LOGGER
 from ...core.config_manager import Config
+from ...core.cpu import allowed_cpus
+from .mem_guard import budget
 from ...core.tg_client import TgClient
-from ..telegram_helper.tg_transfer import MB, HypertgTransfer
+from ..telegram_helper.tg_transfer import MB, HypertgTransfer, media_of
 
 _load_lock = Lock()
 
@@ -59,7 +60,7 @@ class HypertgDownload(HypertgTransfer):
     _MIN_PIPELINE = 4
     _MAX_PIPELINE_MULT = 4
     _LOW_WORKERS = 2
-    _HIGH_WORKERS = max(8, (cpu_count() or 4) * 2)
+    _HIGH_WORKERS = max(8, len(allowed_cpus()) * 2)
     _MAX_RETRIES = 4
 
     def __init__(self, obj):
@@ -138,24 +139,7 @@ class HypertgDownload(HypertgTransfer):
 
     @staticmethod
     def _media_of(message):
-        for attr in (
-            "audio",
-            "document",
-            "photo",
-            "sticker",
-            "animation",
-            "video",
-            "voice",
-            "video_note",
-            "new_chat_photo",
-            "story",
-            "web_page",
-        ):
-            if m := getattr(message, attr, None):
-                return m
-        raise ValueError(
-            f"No downloadable media in msg {message.id} (type: {message.media})"
-        )
+        return media_of(message)
 
     async def _do_req(self, sess, client, location, off, csz, attempt=0):
         try:
@@ -288,7 +272,28 @@ class HypertgDownload(HypertgTransfer):
         pipe_timeouts = 0
         bot_down = False
 
+        held = 0
+
+        async def _hold():
+            nonlocal held
+            await budget.reserve(csz)
+            held += 1
+
+        async def _drop(count=1):
+            nonlocal held
+            count = min(count, held)
+            if count <= 0:
+                return
+            held -= count
+            await budget.release(csz * count)
+
         async def _write(roff, chunk):
+            try:
+                await _write_body(roff, chunk)
+            finally:
+                await _drop()
+
+        async def _write_body(roff, chunk):
             if roff == first_off and roff + csz >= end:
                 chunk = chunk[first_trim : last_byte - roff + 1]
                 await self._pwrite(fd, chunk, start)
@@ -391,6 +396,23 @@ class HypertgDownload(HypertgTransfer):
 
         write_tasks = set()
         failed_offsets = set()
+        write_errors = 0
+        max_writes = max(max_win, min_win)
+
+        def _reap_writes():
+            nonlocal write_errors
+            for t in [t for t in write_tasks if t.done()]:
+                write_tasks.discard(t)
+                if not t.cancelled() and t.exception() is not None:
+                    write_errors += 1
+
+        async def _queue_write(roff, chunk):
+            write_tasks.add(create_task(_write(roff, chunk)))
+            _reap_writes()
+            while len(write_tasks) >= max_writes:
+                await wait(write_tasks, return_when=FIRST_COMPLETED)
+                _reap_writes()
+
         try:
             while cur <= last_byte or inflight:
                 if bot_down:
@@ -399,18 +421,20 @@ class HypertgDownload(HypertgTransfer):
                             inflight, return_when=FIRST_COMPLETED
                         )
                         for f in done_set:
+                            known = _inflight_offsets.pop(f, None)
                             try:
                                 s, roff, chunk = f.result()
                                 if not chunk:
                                     failed_offsets.add(roff)
+                                    await _drop()
                                     continue
-                                write_tasks.add(create_task(_write(roff, chunk)))
+                                await _queue_write(roff, chunk)
                             except CancelledError:
                                 raise
                             except Exception:
-                                roff = _inflight_offsets.get(f)
-                                if roff is not None:
-                                    failed_offsets.add(roff)
+                                await _drop()
+                                if known is not None:
+                                    failed_offsets.add(known)
                     c = cur
                     while c <= last_byte:
                         failed_offsets.add(c)
@@ -419,6 +443,7 @@ class HypertgDownload(HypertgTransfer):
                 while len(inflight) < window and cur <= last_byte:
                     if self._cancel.is_set():
                         raise CancelledError
+                    await _hold()
                     f = ensure_future(_req(cur, seq))
                     _inflight_offsets[f] = cur
                     inflight.add(f)
@@ -428,15 +453,17 @@ class HypertgDownload(HypertgTransfer):
                     break
                 done_set, inflight = await wait(inflight, return_when=FIRST_COMPLETED)
                 for f in done_set:
+                    _inflight_offsets.pop(f, None)
                     s, roff, chunk = f.result()
                     if not chunk:
                         failed_offsets.add(roff)
+                        await _drop()
                         continue
                     ok_count += 1
                     if ok_count >= window:
                         window = min(window + 2, max_win)
                         ok_count = 0
-                    write_tasks.add(create_task(_write(roff, chunk)))
+                    await _queue_write(roff, chunk)
         except CancelledError:
             raise
         except Exception as e:
@@ -446,19 +473,27 @@ class HypertgDownload(HypertgTransfer):
             LOGGER.error(f"HypertgDL pipeline fail client={cname}: {e}")
             raise
         finally:
+            cancelled = 0
             for f in inflight:
                 if not f.done():
                     f.cancel()
+                    cancelled += 1
+            inflight.clear()
+            _inflight_offsets.clear()
+            if cancelled:
+                await _drop(cancelled)
             if write_tasks:
                 write_results = await gather(*write_tasks, return_exceptions=True)
-                write_errors = sum(
+                write_errors += sum(
                     1 for r in write_results if isinstance(r, BaseException)
                 )
-                if write_errors:
-                    LOGGER.warning(
-                        f"HypertgDL {write_errors}/{len(write_results)} "
-                        f"write tasks failed client={cname}"
-                    )
+                write_tasks.clear()
+            if held:
+                await _drop(held)
+            if write_errors:
+                LOGGER.warning(
+                    f"HypertgDL {write_errors} write tasks failed client={cname}"
+                )
         return failed_offsets
 
     async def _part(self, start, end, final_path, ci, fid, csz):
@@ -480,10 +515,11 @@ class HypertgDownload(HypertgTransfer):
 
     @staticmethod
     async def _pwrite(fd, data, offset):
-        total = len(data)
+        view = memoryview(data)
+        total = len(view)
         written = 0
         while written < total:
-            n = await to_thread(os.pwrite, fd, data[written:], offset + written)
+            n = await to_thread(os.pwrite, fd, view[written:], offset + written)
             if n == 0:
                 raise OSError(f"pwrite returned 0 at offset {offset + written}")
             written += n
