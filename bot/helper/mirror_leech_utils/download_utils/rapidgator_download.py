@@ -47,7 +47,8 @@ async def add_rapidgator_download(listener, path):
     listener.size = size
     if not listener.name:
         listener.name = filename
-    path = f"{path}/{listener.name}"
+    # Do not create nested subdirectory for single-file downloads
+    # path = f"{path}/{listener.name}"
 
     msg, button = await stop_duplicate_check(listener)
     if msg:
